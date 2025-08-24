@@ -17,7 +17,7 @@ class SwapDataService {
       
       const decodedSwaps = rawLogs.map(log => this.decoder.decodeSwapEvent(log));
       
-      console.log(`Decoded ${decodedSwaps.length} swaps from ${dataSource} data`);
+      // Decoded swap data ready
       
       return {
         data: decodedSwaps,
@@ -51,7 +51,7 @@ class SwapDataService {
         this.recentSwaps = this.recentSwaps.slice(0, this.maxCacheSize);
       }
       
-      console.log(`Decoded single new swap: Block ${decodedSwap.blockNumber}`);
+      // New swap decoded
       
       return {
         newSwap: decodedSwap,

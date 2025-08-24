@@ -9,12 +9,16 @@ const timeseriesRoutes = require('./routes/timeseries');
 const healthRoutes = require('./routes/health');
 const websocketRoutes = require('./routes/websocket');
 const SwapWebSocketServer = require('./services/wsServer');
+const SubscriptionService = require('./services/subscriptionService');
+const EmailService = require('./services/emailService');
 const SwapDataService = require('./services/swapDataService');
 const DatabaseService = require('./services/databaseService');
 
 const databaseService = new DatabaseService();
 const swapDataService = new SwapDataService(databaseService);
-const wsServer = new SwapWebSocketServer(swapDataService, databaseService);
+const subscriptionService = new SubscriptionService(databaseService);
+const emailService = new EmailService();
+const wsServer = new SwapWebSocketServer(swapDataService, databaseService, subscriptionService, emailService);
 
 const app = express();
 const server = http.createServer(app);
@@ -31,13 +35,16 @@ app.use('/timeseries', timeseriesRoutes);
 app.use('/health', healthRoutes);
 app.use('/websocket', websocketRoutes);
 
+// Initialize subscription routes
+const { router: subscriptionRouter, initServices: initSubscriptionServices } = require('./routes/subscriptions');
+initSubscriptionServices(subscriptionService, emailService);
+app.use('/subscriptions', subscriptionRouter);
+
 app.get('/', (req, res) => {
   // Determine WebSocket URL based on environment
   const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'wss' : 'ws';
   const host = req.get('host');
-  const wsUrl = host
-    ? `${protocol}://${host}/ws`
-    : `ws://localhost:${WS_PORT}`;
+  const wsUrl = `${protocol}://${host}/ws`;
 
   res.json({
     message: 'Lixer API Server',
@@ -64,15 +71,38 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not Found' });
 });
 
-wsServer.start(WS_PORT).then(() => {
-  console.log(`WebSocket server started on port ${WS_PORT}`);
+wsServer.start(server).then(() => {
+  console.log(`WebSocket server integrated with HTTP server`);
 }).catch(error => {
   console.error('Failed to start WebSocket server:', error);
 });
 
+// Setup subscription notifications listener
+databaseService.addSubscriptionListener((subscriptionData) => {
+  // Send welcome email for new subscriptions
+  if (subscriptionData.action === 'created') {
+    emailService.sendSubscriptionConfirmation(subscriptionData.email, subscriptionData.address)
+      .catch(error => {
+        console.error(`Failed to send welcome email to ${subscriptionData.email}:`, error.message);
+      });
+  }
+});
+
+// Initialize database tables
+async function initServices() {
+  try {
+    await subscriptionService.createSubscriptionTable();
+    console.log('Email subscriptions table initialized');
+  } catch (error) {
+    console.error('Failed to initialize subscription table:', error);
+  }
+}
+
+initServices();
+
 server.listen(PORT, () => {
   console.log(`Lixer API Server running on port ${PORT}`);
-  console.log(`WebSocket server running on port ${WS_PORT}`);
+  console.log(`WebSocket server available at /ws`);
   console.log(`Subgraph URL: ${process.env.SUBGRAPH_URL}`);
 });
 

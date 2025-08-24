@@ -6,6 +6,7 @@ class DatabaseService {
     this.notifyClient = null;
     this.connectionString = process.env.DATABASE_URL;
     this.listeners = new Set();
+    this.subscriptionListeners = new Set();
     }
 
   async connect() {
@@ -85,11 +86,13 @@ class DatabaseService {
       `);
       
       await this.notifyClient.query('LISTEN new_swap');
+      await this.notifyClient.query('LISTEN new_subscription');
       
       this.notifyClient.on('notification', (msg) => {
         if (msg.channel === 'new_swap') {
-          console.log('Real-time swap detected:', JSON.parse(msg.payload).block_number);
           this.notifyListeners(JSON.parse(msg.payload));
+        } else if (msg.channel === 'new_subscription') {
+          this.notifySubscriptionListeners(JSON.parse(msg.payload));
         }
       });
       
@@ -115,6 +118,24 @@ class DatabaseService {
         callback(swapData);
       } catch (error) {
         console.error('Error in realtime listener:', error);
+      }
+    });
+  }
+
+  addSubscriptionListener(callback) {
+    this.subscriptionListeners.add(callback);
+  }
+
+  removeSubscriptionListener(callback) {
+    this.subscriptionListeners.delete(callback);
+  }
+
+  notifySubscriptionListeners(subscriptionData) {
+    this.subscriptionListeners.forEach(callback => {
+      try {
+        callback(subscriptionData);
+      } catch (error) {
+        console.error('Error in subscription listener:', error);
       }
     });
   }
@@ -178,6 +199,18 @@ class DatabaseService {
     } catch (error) {
       console.error('Error fetching swap by ID:', error.message);
       return null;
+    }
+  }
+
+  async query(text, params) {
+    try {
+      if (!this.client) {
+        await this.connect();
+      }
+      return await this.client.query(text, params);
+    } catch (error) {
+      console.error('Database query error:', error.message);
+      throw error;
     }
   }
 

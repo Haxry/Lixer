@@ -2,17 +2,26 @@ const WebSocket = require('ws');
 const SwapDataService = require('./swapDataService');
 
 class SwapWebSocketServer {
-  constructor(swapDataService, databaseService) {
+  constructor(swapDataService, databaseService, subscriptionService = null, emailService = null) {
     this.wss = null;
     this.clients = new Set();
     this.swapDataService = swapDataService;
     this.databaseService = databaseService;
+    this.subscriptionService = subscriptionService;
+    this.emailService = emailService;
     this.broadcastInterval = null;
   }
 
-  async start(port = 8080) {
-    this.wss = new WebSocket.Server({ port });
-    console.log(`WebSocket server started on port ${port}`);
+  async start(server) {
+    // If server is passed, attach to existing HTTP server, otherwise use port
+    if (server) {
+      this.wss = new WebSocket.Server({ server, path: '/ws' });
+      console.log(`WebSocket server attached to HTTP server at /ws`);
+    } else {
+      const port = typeof server === 'number' ? server : 8080;
+      this.wss = new WebSocket.Server({ port });
+      console.log(`WebSocket server started on port ${port}`);
+    }
 
     await this.setupRealtimeUpdates();
 
@@ -25,10 +34,8 @@ class SwapWebSocketServer {
       ws.on('message', (message) => {
         try {
           const data = JSON.parse(message);
-          console.log('Received message:', data);
-          
-          if (data.type === 'subscribe') {
-            console.log('Client subscribed to real-time updates');
+          if (data.type === 'get_latest') {
+            this.sendDataToClient(ws);
           }
         } catch (error) {
           console.error('Error parsing message:', error);
@@ -47,23 +54,6 @@ class SwapWebSocketServer {
     });
   }
 
-  handleClientMessage(ws, data) {
-    switch (data.type) {
-      case 'subscribe':
-        console.log('Client subscribed to swap data');
-        this.sendDataToClient(ws);
-        break;
-      case 'unsubscribe':
-        console.log('Client unsubscribed from swap data');
-        break;
-      case 'get_latest':
-        console.log('Client requested latest data');
-        this.sendDataToClient(ws);
-        break;
-      default:
-        console.log('Unknown message type:', data.type);
-    }
-  }
 
   async sendDataToClient(ws) {
     if (ws.readyState === WebSocket.OPEN) {
@@ -114,15 +104,44 @@ class SwapWebSocketServer {
         data: swapResult.recentSwaps
       };
       
-      console.log(`Broadcasting INSTANT update to ${this.clients.size} clients - Block ${newSwapData.block_number}`);
+      // Broadcasting to WebSocket clients
       
       this.clients.forEach((ws) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(message));
         }
       });
+      
+      await this.logTrackedSwaps(swapResult.newSwap);
     } catch (error) {
       console.error('Error broadcasting realtime data:', error);
+    }
+  }
+
+  async logTrackedSwaps(swapData) {
+    try {
+      // Check email subscriptions
+      const subscriptions = await this.subscriptionService.getSubscriptionsForSwap(
+        swapData.sender, 
+        swapData.recipient
+      );
+
+      for (const subscription of subscriptions) {
+        try {
+          if (this.emailService) {
+            await this.emailService.sendSwapAlert(
+              subscription.email, 
+              swapData, 
+              subscription.address
+            );
+            console.log(`📧 Swap alert sent to ${subscription.email}`);
+          }
+        } catch (emailError) {
+          console.error(`Failed to send email to ${subscription.email}:`, emailError);
+        }
+      }
+    } catch (error) {
+      console.error('Error processing swap notifications:', error);
     }
   }
 
@@ -136,8 +155,6 @@ class SwapWebSocketServer {
         source: swapData.source,
         data: swapData.data
       };
-      
-      console.log(`Broadcasting to ${this.clients.size} clients - ${swapData.count} swaps`);
       
       this.clients.forEach((ws) => {
         if (ws.readyState === WebSocket.OPEN) {
